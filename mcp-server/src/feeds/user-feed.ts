@@ -53,7 +53,7 @@ export async function getUserRSSFeed(c: Context) {
     const user = await c.env.DB
       .prepare('SELECT id FROM users WHERE username = ?')
       .bind(username)
-      .first<{ id: number }>();
+      .first() as { id: number } | null;
 
     if (!user) {
       return c.text('User not found', HTTP_NOT_FOUND);
@@ -89,7 +89,7 @@ export async function getUserRSSFeed(c: Context) {
         LIMIT 50
       `)
       .bind(user.id, user.id)
-      .all<PaperWithStatus>();
+      .all() as { results: PaperWithStatus[] };
 
     const papers = result.results || [];
 
@@ -133,7 +133,7 @@ export async function getUserAtomFeed(c: Context) {
     const user = await c.env.DB
       .prepare('SELECT id FROM users WHERE username = ?')
       .bind(username)
-      .first<{ id: number }>();
+      .first() as { id: number } | null;
 
     if (!user) {
       return c.text('User not found', HTTP_NOT_FOUND);
@@ -169,7 +169,7 @@ export async function getUserAtomFeed(c: Context) {
         LIMIT 50
       `)
       .bind(user.id, user.id)
-      .all<PaperWithStatus>();
+      .all() as { results: PaperWithStatus[] };
 
     const papers = result.results || [];
 

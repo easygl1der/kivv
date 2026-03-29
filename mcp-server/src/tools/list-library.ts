@@ -138,10 +138,9 @@ export async function listLibrary(c: Context) {
     // Build bindings: user_id for JOIN, user_id twice for WHERE, optional filters, pagination
     const queryBindings = [user.id, user.id, user.id, ...optionalBindings, limit, offset];
 
-    const result = await c.env.DB
-      .prepare(query)
-      .bind(...queryBindings)
-      .all<PaperWithStatus>();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stmt = c.env.DB.prepare(query) as any;
+    const result = await stmt.bind(...queryBindings).all() as { results: PaperWithStatus[] };
 
     // Get total count for pagination metadata (same LEFT JOIN logic)
     const countQuery = `
@@ -155,12 +154,12 @@ export async function listLibrary(c: Context) {
     const countResult = await c.env.DB
       .prepare(countQuery)
       .bind(...countBindings)
-      .first<{ total: number }>();
+      .first() as { total: number } | null;
 
     const total = countResult?.total ?? 0;
 
     // Convert SQLite boolean integers (0/1) to TypeScript booleans
-    const papers = result.results.map(paper => ({
+    const papers: PaperWithStatus[] = result.results.map((paper: PaperWithStatus) => ({
       ...paper,
       explored: Boolean(paper.explored),
       bookmarked: Boolean(paper.bookmarked),

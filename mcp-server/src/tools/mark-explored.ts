@@ -127,7 +127,7 @@ export async function markExplored(c: Context) {
     const existingStatus = await c.env.DB
       .prepare('SELECT * FROM user_paper_status WHERE user_id = ? AND paper_id = ?')
       .bind(user.id, body.paper_id)
-      .first<{
+      .first() as {
         user_id: number;
         paper_id: number;
         explored: number;
@@ -135,13 +135,13 @@ export async function markExplored(c: Context) {
         notes: string | null;
         read_at: string | null;
         created_at: string;
-      }>();
+      } | null;
 
     if (existingStatus) {
       // UPDATE existing record
       // Build dynamic SET clause based on provided fields
       const updates: string[] = ['read_at = ?'];
-      const bindings: (string | number)[] = [now];
+      const bindings: (string | number | null)[] = [now];
 
       if (body.explored !== undefined) {
         updates.push('explored = ?');
@@ -189,7 +189,7 @@ export async function markExplored(c: Context) {
     const updatedStatus = await c.env.DB
       .prepare('SELECT * FROM user_paper_status WHERE user_id = ? AND paper_id = ?')
       .bind(user.id, body.paper_id)
-      .first<{
+      .first() as {
         user_id: number;
         paper_id: number;
         explored: number;
@@ -197,7 +197,7 @@ export async function markExplored(c: Context) {
         notes: string | null;
         read_at: string | null;
         created_at: string;
-      }>();
+      } | null;
 
     // This should never happen since we just created/updated it
     if (!updatedStatus) {

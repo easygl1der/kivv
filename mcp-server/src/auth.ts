@@ -66,7 +66,7 @@ export async function authenticateUser(
     const result = await env.DB
       .prepare('SELECT * FROM users WHERE api_key = ? LIMIT 1')
       .bind(apiKey)
-      .first<User>();
+      .first() as User | null;
 
     if (!result) {
       return null;

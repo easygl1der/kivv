@@ -194,10 +194,7 @@ export async function searchPapers(c: Context) {
     // Add pagination parameters to bindings
     const queryBindings = [...bindings, limit, offset];
 
-    const result = await c.env.DB
-      .prepare(query)
-      .bind(...queryBindings)
-      .all<PaperWithStatus>();
+    const result = await (c.env.DB.prepare(query) as any).bind(...queryBindings).all() as { results: PaperWithStatus[] };
 
     // Get total count for pagination metadata
     const countQuery = `
@@ -213,7 +210,7 @@ export async function searchPapers(c: Context) {
     const countResult = await c.env.DB
       .prepare(countQuery)
       .bind(...countBindings)
-      .first<{ total: number }>();
+      .first() as { total: number } | null;
 
     const total = countResult?.total ?? 0;
 

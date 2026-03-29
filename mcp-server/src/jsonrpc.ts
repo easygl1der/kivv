@@ -254,7 +254,7 @@ async function executeListLibrary(
       INNER JOIN user_paper_status ups ON p.id = ups.paper_id
       WHERE ${whereClause}
     `;
-    const countResult = await env.DB.prepare(countQuery).bind(...bindings).first<{ total: number }>();
+    const countResult = await env.DB.prepare(countQuery).bind(...bindings).first() as { total: number } | null;
     const total = countResult?.total ?? 0;
 
     const papers = result.results.map((paper: any) => ({
@@ -351,7 +351,7 @@ async function executeSearchPapers(
       INNER JOIN user_paper_status ups ON p.id = ups.paper_id
       WHERE ${whereClause}
     `;
-    const countResult = await env.DB.prepare(countQuery).bind(...bindings).first<{ total: number }>();
+    const countResult = await env.DB.prepare(countQuery).bind(...bindings).first() as { total: number } | null;
     const total = countResult?.total ?? 0;
 
     const papers = result.results.map((paper: any) => ({
@@ -471,12 +471,12 @@ async function executeMarkExplored(
     const updatedStatus = await env.DB
       .prepare('SELECT * FROM user_paper_status WHERE user_id = ? AND paper_id = ?')
       .bind(user.id, args.paper_id)
-      .first<{
+      .first() as {
         explored: number;
         bookmarked: number;
         notes: string | null;
         read_at: string | null;
-      }>();
+      } | null;
 
     const responseText = JSON.stringify({
       success: true,
@@ -546,7 +546,7 @@ export async function handleJsonRpc(c: Context) {
             200
           );
         }
-        const result = await handleToolsCall(params as McpToolsCallParams, user, env);
+        const result = await handleToolsCall(params as unknown as McpToolsCallParams, user, env);
         return c.json(createSuccessResponse(result, id), 200);
       }
 
