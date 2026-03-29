@@ -16,7 +16,7 @@ crons = ["0 6 * * *", "0 18 * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "kivv-db"
-database_id = "1e80f2bf-462d-4d51-8002-a4cf26013933"
+database_id = "3d4fadc3-c3c9-4413-8a89-7535ce49f930"
 
 # R2 Storage binding (for future PDF storage)
 [[r2_buckets]]
@@ -26,7 +26,7 @@ bucket_name = "kivv-papers"
 # KV namespace binding (for checkpoints)
 [[kv_namespaces]]
 binding = "CACHE"
-id = "7f6b7437931c4c268c27d01a4169101b"
+id = "e03d30ec1e414059990439d680411782"
 
 # Environment variables
 [vars]

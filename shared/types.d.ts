@@ -86,7 +86,7 @@ export interface Env {
     DB: D1Database;
     CACHE: KVNamespace;
     PAPERS: R2Bucket;
-    CLAUDE_API_KEY: string;
+    MINIMAX_API_KEY: string;
     D1_DATABASE_ID: string;
     KV_NAMESPACE_ID: string;
     R2_BUCKET_NAME: string;

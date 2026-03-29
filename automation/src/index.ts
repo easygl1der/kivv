@@ -118,6 +118,234 @@ export default {
       });
     }
 
+    // Papers list endpoint for web UI
+    if (url.pathname === '/papers') {
+      const search = url.searchParams.get('search') || '';
+      const limit = parseInt(url.searchParams.get('limit') || '20');
+      const offset = parseInt(url.searchParams.get('offset') || '0');
+
+      let query = 'SELECT id, title, authors, categories, "abstract", "summary", pdf_url, published_date, relevance_score FROM papers';
+      const params: string[] = [];
+
+      if (search) {
+        query += ' WHERE title LIKE ? OR abstract LIKE ? OR authors LIKE ?';
+        const searchPattern = `%${search}%`;
+        params.push(searchPattern, searchPattern, searchPattern);
+      }
+
+      query += ' ORDER BY id DESC LIMIT ? OFFSET ?';
+      params.push(limit.toString(), offset.toString());
+
+      const corsHeaders = {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      };
+
+      // Handle OPTIONS preflight
+      if (request.method === 'OPTIONS') {
+        return new Response(null, { status: 200, headers: corsHeaders });
+      }
+
+      try {
+        const result = await env.DB.prepare(query).bind(...params).all();
+        return new Response(JSON.stringify({
+          papers: result.results,
+          total: result.results?.length || 0
+        }), {
+          status: 200,
+          headers: corsHeaders
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: 'Database error', papers: [] }), {
+          status: 500,
+          headers: corsHeaders
+        });
+      }
+    }
+
+    // Stats endpoint for web UI
+    if (url.pathname === '/stats') {
+      const corsHeaders = {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      };
+
+      // Handle OPTIONS preflight
+      if (request.method === 'OPTIONS') {
+        return new Response(null, { status: 200, headers: corsHeaders });
+      }
+
+      try {
+        const totalResult = await env.DB.prepare('SELECT COUNT(*) as count FROM papers').first<{ count: number }>();
+        const today = new Date().toISOString().split('T')[0];
+        const todayResult = await env.DB.prepare(
+          "SELECT COUNT(*) as count FROM papers WHERE created_at LIKE ?"
+        ).bind(`${today}%`).first<{ count: number }>();
+
+        return new Response(JSON.stringify({
+          total: totalResult?.count || 0,
+          today: todayResult?.count || 0
+        }), {
+          status: 200,
+          headers: corsHeaders
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ total: 0, today: 0, error: String(error) }), {
+          status: 200,
+          headers: corsHeaders
+        });
+      }
+    }
+
+        // Web UI
+    if (url.pathname === '/' || url.pathname === '/ui') {
+      const html = `<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>kivv 文献库</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#f5f5f5;color:#333;line-height:1.6}
+.container{max-width:900px;margin:0 auto;padding:20px}
+header{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:30px 0;text-align:center;margin-bottom:30px}
+h1{font-size:2rem;margin-bottom:10px}
+.subtitle{opacity:.9;font-size:.9rem}
+.search-box{display:flex;gap:10px;margin-bottom:30px}
+input{flex:1;padding:12px 20px;font-size:16px;border:2px solid #ddd;border-radius:8px}
+input:focus{outline:none;border-color:#667eea}
+button{padding:12px 30px;font-size:16px;background:#667eea;color:#fff;border:none;border-radius:8px;cursor:pointer}
+button:hover{background:#5568d3}
+.stats{display:flex;gap:20px;margin-bottom:30px}
+.stat{flex:1;background:#fff;padding:20px;border-radius:12px;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.1)}
+.stat-value{font-size:2rem;font-weight:700;color:#667eea}
+.stat-label{color:#666;font-size:.9rem}
+.paper-card{background:#fff;padding:20px;margin-bottom:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.1)}
+.paper-title{font-size:1.1rem;font-weight:600;color:#333;margin-bottom:8px}
+.paper-meta{font-size:.85rem;color:#888;margin-bottom:12px}
+.paper-summary{font-size:.95rem;color:#555;line-height:1.7}
+.paper-summary h1,.paper-summary h2,.paper-summary h3{color:#333;margin:16px 0 8px}
+.paper-summary h1{font-size:1.3rem}.paper-summary h2{font-size:1.2rem}.paper-summary h3{font-size:1.1rem}
+.paper-summary p{margin-bottom:12px}
+.paper-summary strong{color:#333}
+.paper-summary ul,.paper-summary ol{margin:12px 0;padding-left:24px}
+.paper-summary li{margin-bottom:6px}
+.paper-summary code{background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:.9em}
+.paper-summary pre{background:#f0f0f0;padding:12px;border-radius:8px;overflow-x:auto;margin:12px 0}
+.paper-summary pre code{background:none;padding:0}
+.paper-summary a{color:#667eea}
+.paper-summary blockquote{border-left:4px solid #667eea;padding-left:16px;margin:12px 0;color:#666}
+.paper-link{display:inline-block;margin-top:12px;color:#667eea;text-decoration:none;font-size:.9rem}
+.loading,.empty{text-align:center;padding:40px;color:#888}
+.paper-links{display:flex;justify-content:space-between;margin-top:12px}
+.expand-link,.paper-link{color:#667eea;text-decoration:none;font-size:.9rem}
+.expand-link:hover,.paper-link:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<header><div class="container"><h1>kivv 文献库</h1><p class="subtitle">自动追踪 arXiv 最新论文</p></div></header>
+<div class="container">
+<div class="search-box"><input type="text" id="searchInput" placeholder="搜索论文..."><button onclick="searchPapers()">搜索</button></div>
+<div class="stats"><div class="stat"><div class="stat-value" id="totalCount">-</div><div class="stat-label">总论文数</div></div><div class="stat"><div class="stat-value" id="todayCount">-</div><div class="stat-label">今日新增</div></div></div>
+<div id="papersList"><div class="loading">加载中...</div></div>
+</div>
+<script>
+let papersData = [];
+function escapeHtml(t) { return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+async function fetchPapers(q) {
+  try {
+    const r = await fetch(q ? "/papers?search="+encodeURIComponent(q) : "/papers");
+    return (await r.json()).papers || [];
+  } catch { return []; }
+}
+async function loadStats() {
+  try {
+    const r = await fetch("/stats");
+    const d = await r.json();
+    document.getElementById("totalCount").textContent = d.total || 0;
+    document.getElementById("todayCount").textContent = d.today || 0;
+  } catch {}
+}
+async function searchPapers() {
+  const q = document.getElementById("searchInput").value;
+  document.getElementById("papersList").innerHTML = "<div class=loading>搜索中...</div>";
+  papersData = await fetchPapers(q);
+  renderPapers();
+}
+function renderPapers() {
+  const el = document.getElementById("papersList");
+  if (!papersData.length) { el.innerHTML = "<div class=empty>暂无论文</div>"; return; }
+  el.innerHTML = papersData.map((p, i) => {
+    // Use AI summary if available, otherwise use original abstract
+    const aiSummary = p.summary || "";
+    const originalAbstract = p.abstract || "";
+    const displayText = aiSummary || originalAbstract;
+    const hasAiSummary = aiSummary.length > 0;
+    const isLong = displayText.length > 500;
+    const preview = isLong ? displayText.substring(0, 500) + "..." : displayText;
+    const summaryLabel = hasAiSummary ? "AI 摘要" : "摘要";
+    // Use marked to parse markdown
+    const previewHtml = marked.parse(preview);
+    const fullHtml = marked.parse(displayText);
+    // Initial state: show "展开", after click: show "收起"
+    const linksHtml = (p.pdf_url ? '<a href="' + p.pdf_url + '" target="_blank" class="paper-link">查看 PDF</a>' : '') +
+      (isLong ? '<a href="javascript:void(0)" class="expand-link" id="toggle-' + i + '" onclick="toggleSummary(' + i + ')">展开' + summaryLabel + '</a>' : '');
+    return '<div class="paper-card"><div class="paper-title">' + escapeHtml(p.title) + '</div>' +
+      '<div class="paper-meta">' + escapeHtml(p.authors || "") + ' | ' + escapeHtml(p.categories || "") + '</div>' +
+      '<div class="paper-summary" id="summary-' + i + '" data-preview-html="' + escapeHtml(previewHtml) + '" data-full-html="' + escapeHtml(fullHtml) + '" data-expanded="false">' + previewHtml + '</div>' +
+      '<div class="paper-links">' + linksHtml + '</div></div>';
+  }).join('');
+  // Render math after papers are added
+  document.querySelectorAll('.paper-summary').forEach(function(el) {
+    renderMathInElement(el, {
+      delimiters: [
+        { left: '$$', right: '$$', display: true },
+        { left: '$', right: '$', display: false },
+        { left: '\\(', right: '\\)', display: false },
+        { left: '\\[', right: '\\]', display: true }
+      ],
+      throwOnError: false
+    });
+  });
+}
+function toggleSummary(i) {
+  const el = document.getElementById("summary-" + i);
+  const toggleLink = document.getElementById("toggle-" + i);
+  const isExpanded = el.dataset.expanded === "true";
+  if (isExpanded) {
+    el.innerHTML = el.dataset.previewHtml;
+    el.dataset.expanded = "false";
+    toggleLink.textContent = toggleLink.textContent.replace("收起", "展开");
+  } else {
+    el.innerHTML = el.dataset.fullHtml;
+    el.dataset.expanded = "true";
+    toggleLink.textContent = toggleLink.textContent.replace("展开", "收起");
+  }
+  // Render math in the newly shown content
+  renderMathInElement(el, {
+      delimiters: [
+        { left: '$$', right: '$$', display: true },
+        { left: '$', right: '$', display: false },
+        { left: '\\(', right: '\\)', display: false },
+        { left: '\\[', right: '\\]', display: true }
+      ],
+      throwOnError: false
+    });
+}
+loadStats(); searchPapers();
+</script>
+</body>
+</html>`;
+      return new Response(html, { headers: { 'Content-Type': 'text/html' } });
+    }
+
     // Status endpoint - check current checkpoint
     if (url.pathname === '/status') {
       const today = formatDate(new Date());
@@ -226,6 +454,91 @@ export default {
       }
     }
 
+    // Topics management endpoint
+    if (url.pathname === '/topics' && request.method === 'GET') {
+      const authHeader = request.headers.get('authorization');
+      const cronSecret = env.CRON_SECRET || 'test-secret';
+
+      if (authHeader !== `Bearer ${cronSecret}`) {
+        return new Response(JSON.stringify({ error: 'Forbidden' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      try {
+        const topics = await env.DB.prepare(
+          'SELECT id, user_id, topic_name, arxiv_query, enabled, relevance_threshold, max_papers_per_day FROM topics'
+        ).all();
+        return new Response(JSON.stringify({ topics: topics.results }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: String(error) }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // Update topics endpoint
+    if (url.pathname === '/topics' && request.method === 'POST') {
+      const authHeader = request.headers.get('authorization');
+      const cronSecret = env.CRON_SECRET || 'test-secret';
+
+      if (authHeader !== `Bearer ${cronSecret}`) {
+        return new Response(JSON.stringify({ error: 'Forbidden' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      try {
+        const body = await request.json() as { topics: Array<{ name?: string; topic_name?: string; query?: string; arxiv_query?: string; enabled?: boolean }>, clear_papers?: boolean };
+
+        // Normalize topic names
+        const topics = body.topics.map(t => ({
+          topic_name: t.name || t.topic_name || '',
+          arxiv_query: t.query || t.arxiv_query || '',
+          enabled: t.enabled ?? true
+        }));
+
+        console.log('Updating topics:', JSON.stringify(topics));
+
+        // First delete all existing topics for user 1
+        await env.DB.prepare('DELETE FROM topics WHERE user_id = 1').run();
+
+        // Clear papers if requested
+        if (body.clear_papers) {
+          await env.DB.prepare('DELETE FROM papers').run();
+        }
+
+        // Insert new topics - using basic columns only to avoid schema issues
+        for (const topic of topics) {
+          console.log('Inserting topic:', topic.topic_name, topic.arxiv_query);
+          await env.DB.prepare(`
+            INSERT INTO topics (user_id, topic_name, arxiv_query, enabled)
+            VALUES (1, ?, ?, ?)
+          `).bind(topic.topic_name, topic.arxiv_query, topic.enabled ? 1 : 0).run();
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: `Updated ${topics.length} topics${body.clear_papers ? ', cleared papers' : ''}`,
+          topics: topics
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: String(error) }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
     // Default response
     return new Response('kivv Automation Worker\n\nEndpoints:\n- GET /health - Health check\n- GET /status - Check today\'s checkpoint\n- POST /run - Manual processing trigger (requires auth)\n- POST /notify - Manual notification trigger (requires auth)', {
       status: 200,
@@ -292,7 +605,7 @@ async function runAutomation(env: Env): Promise<AutomationResult> {
 
   // Initialize clients
   const arxivClient = new ArxivClient();
-  const summarizationClient = new SummarizationClient(env.CLAUDE_API_KEY);
+  const summarizationClient = new SummarizationClient(env.MINIMAX_API_KEY, 'minimax');
 
   let batchExhausted = false;
 
@@ -521,9 +834,41 @@ async function processUser(
         .first();
 
       if (existing) {
-        console.log(`[PAPER:${paper.arxiv_id}] Already exists in database, skipping`);
+        console.log(`[PAPER:${paper.arxiv_id}] Already exists in database, regenerating summary`);
 
-        // Single INSERT OR IGNORE instead of SELECT + conditional INSERT
+        // Regenerate summary for existing paper using the summarize method
+        const summaryResult = await summarizationClient.summarize(
+          paper.title,
+          paper.abstract,
+          topicNames,
+          0.5, // relevance threshold
+          summarizationClient.getTotalCost()
+        );
+
+        if (summaryResult.summary) {
+          // Update the summary
+          await env.DB
+            .prepare(`
+              UPDATE papers
+              SET summary = ?,
+                  summary_generated_at = ?,
+                  summary_model = ?,
+                  relevance_score = ?
+              WHERE arxiv_id = ?
+            `)
+            .bind(
+              summaryResult.summary,
+              new Date().toISOString(),
+              'MiniMax-M2.5',
+              summaryResult.relevance_score,
+              paper.arxiv_id
+            )
+            .run();
+
+          console.log(`[PAPER:${paper.arxiv_id}] Updated summary (relevance: ${summaryResult.relevance_score.toFixed(2)})`);
+        }
+
+        // Update user_paper_status
         await env.DB
           .prepare(`
             INSERT OR IGNORE INTO user_paper_status
@@ -533,9 +878,6 @@ async function processUser(
           .bind(user.id, existing.id, new Date().toISOString())
           .run();
 
-        console.log(`[PAPER:${paper.arxiv_id}] Ensured user_paper_status entry exists`);
-
-        // Already existing papers count toward batch limit (they use time)
         papersProcessed++;
         continue;
       }

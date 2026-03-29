@@ -109,7 +109,7 @@ export interface Env {
   PAPERS: R2Bucket;
 
   // Environment variables
-  CLAUDE_API_KEY: string;
+  MINIMAX_API_KEY: string;
   D1_DATABASE_ID: string;
   KV_NAMESPACE_ID: string;
   R2_BUCKET_NAME: string;

@@ -37,7 +37,7 @@ export const CLAUDE_SONNET_MODEL = 'claude-3-5-sonnet-20241022';
 // Token Limits
 // =============================================================================
 /** Maximum output tokens for Sonnet summaries (3 bullet points) */
-export const MAX_SUMMARY_OUTPUT_TOKENS = 120;
+export const MAX_SUMMARY_OUTPUT_TOKENS = 5000;
 /** Maximum output tokens for Haiku triage (just a number 0.0-1.0) */
 export const MAX_TRIAGE_OUTPUT_TOKENS = 10;
 // =============================================================================

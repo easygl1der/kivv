@@ -10,12 +10,12 @@ workers_dev = true
 [[d1_databases]]
 binding = "DB"
 database_name = "kivv-db"
-database_id = "1e80f2bf-462d-4d51-8002-a4cf26013933"
+database_id = "3d4fadc3-c3c9-4413-8a89-7535ce49f930"
 
 # KV Namespace binding
 [[kv_namespaces]]
 binding = "CACHE"
-id = "7f6b7437931c4c268c27d01a4169101b"
+id = "e03d30ec1e414059990439d680411782"
 
 # R2 Bucket binding
 [[r2_buckets]]
