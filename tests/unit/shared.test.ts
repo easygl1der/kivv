@@ -119,11 +119,11 @@ describe('Shared Constants', () => {
 
   it('should export model identifiers', () => {
     expect(CLAUDE_HAIKU_MODEL).toBe('claude-3-5-haiku-20241022');
-    expect(CLAUDE_SONNET_MODEL).toBe('claude-3-5-sonnet-20241022');
+    expect(CLAUDE_SONNET_MODEL).toBe('claude-sonnet-4-20250514');
   });
 
   it('should export token limits', () => {
-    expect(MAX_SUMMARY_OUTPUT_TOKENS).toBe(120);
+    expect(MAX_SUMMARY_OUTPUT_TOKENS).toBe(5000);
     expect(MAX_TRIAGE_OUTPUT_TOKENS).toBe(10);
   });
 

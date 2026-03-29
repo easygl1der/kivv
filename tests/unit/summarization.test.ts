@@ -5,7 +5,7 @@
 // Covers: rate limiting, triage, summaries, cost tracking, error handling
 // =============================================================================
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 const mock = vi.fn;
 import { SummarizationClient } from '../../shared/summarization';
 
@@ -21,55 +21,59 @@ const DEFAULT_RELEVANCE_THRESHOLD = 0.7;
 // =============================================================================
 
 /**
- * Mock Anthropic API response for Haiku triage
+ * Mock MiniMax/OpenAI-compatible API response for Haiku triage
  */
 function mockHaikuResponse(score: number) {
   return {
     id: 'msg_haiku_123',
-    type: 'message',
-    role: 'assistant',
-    content: [
+    model: 'MiniMax-M2.5',
+    choices: [
       {
-        type: 'text',
-        text: score.toString(),
+        message: {
+          role: 'assistant',
+          content: score.toString(),
+        },
+        finish_reason: 'stop',
       },
     ],
-    model: 'claude-3-5-haiku-20241022',
     usage: {
-      input_tokens: 150,
-      output_tokens: 3,
+      prompt_tokens: 150,
+      completion_tokens: 3,
+      total_tokens: 153,
     },
   };
 }
 
 /**
- * Mock Anthropic API response for Sonnet summary
+ * Mock MiniMax/OpenAI-compatible API response for Sonnet summary
  */
 function mockSonnetResponse(summary: string) {
   return {
     id: 'msg_sonnet_456',
-    type: 'message',
-    role: 'assistant',
-    content: [
+    model: 'MiniMax-M2.5',
+    choices: [
       {
-        type: 'text',
-        text: summary,
+        message: {
+          role: 'assistant',
+          content: summary,
+        },
+        finish_reason: 'stop',
       },
     ],
-    model: 'claude-3-5-sonnet-20241022',
     usage: {
-      input_tokens: 200,
-      output_tokens: 80,
+      prompt_tokens: 200,
+      completion_tokens: 80,
+      total_tokens: 280,
     },
   };
 }
 
 /**
- * Mock fetch globally for tests
+ * Mock fetch globally for tests using vi.spyOn (properly isolated per test)
  */
 function mockFetch(responses: any[]) {
   let callCount = 0;
-  globalThis.fetch = mock((url: string, options?: any) => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((url: string, options?: any) => {
     const response = responses[callCount++] || responses[responses.length - 1];
     return Promise.resolve({
       ok: true,
@@ -82,17 +86,15 @@ function mockFetch(responses: any[]) {
 }
 
 /**
- * Mock fetch to return error
+ * Mock fetch to return error using vi.spyOn
  */
 function mockFetchError(status: number, statusText: string) {
-  globalThis.fetch = mock((url: string, options?: any) => {
-    return Promise.resolve({
-      ok: false,
-      status,
-      statusText,
-      text: () => Promise.resolve(`Error: ${statusText}`),
-    } as Response);
-  });
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+    ok: false,
+    status,
+    statusText,
+    text: () => Promise.resolve(`Error: ${statusText}`),
+  } as Response);
 }
 
 // =============================================================================
@@ -104,6 +106,10 @@ describe('SummarizationClient', () => {
 
   beforeEach(() => {
     client = new SummarizationClient('test-api-key-12345');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   // ===========================================================================
@@ -194,8 +200,22 @@ describe('SummarizationClient', () => {
     it('handles invalid scores by defaulting to 0.5', async () => {
       mockFetch([
         {
-          ...mockHaikuResponse(0),
-          content: [{ type: 'text', text: 'invalid' }],
+          id: 'msg_haiku_invalid',
+          model: 'MiniMax-M2.5',
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content: 'invalid',
+              },
+              finish_reason: 'stop',
+            },
+          ],
+          usage: {
+            prompt_tokens: 150,
+            completion_tokens: 1,
+            total_tokens: 151,
+          },
         },
       ]);
 
@@ -217,9 +237,9 @@ describe('SummarizationClient', () => {
         ['AI']
       );
 
-      // Haiku: 150 input tokens * $0.25/1M = $0.0000375
-      //        3 output tokens * $1.25/1M = $0.00000375
-      const expectedHaikuCost = 150 * (0.25 / 1_000_000) + 3 * (1.25 / 1_000_000);
+      // MiniMax M2.5: $0.10/1M for both input and output
+      // 150 prompt_tokens + 3 completion_tokens = 153 * $0.10/1M = $0.0000153
+      const expectedHaikuCost = (150 + 3) * (0.10 / 1_000_000);
 
       expect(result.haiku_cost).toBeCloseTo(expectedHaikuCost, 8);
     });
@@ -274,9 +294,9 @@ describe('SummarizationClient', () => {
         ['AI']
       );
 
-      // Sonnet: 200 input tokens * $3/1M = $0.0006
-      //         80 output tokens * $15/1M = $0.0012
-      const expectedSonnetCost = 200 * (3.0 / 1_000_000) + 80 * (15.0 / 1_000_000);
+      // MiniMax M2.5: $0.10/1M for both input and output
+      // 200 prompt_tokens + 80 completion_tokens = 280 * $0.10/1M = $0.000028
+      const expectedSonnetCost = (200 + 80) * (0.10 / 1_000_000);
 
       expect(result.sonnet_cost).toBeCloseTo(expectedSonnetCost, 8);
     });
@@ -573,8 +593,8 @@ describe('SummarizationClient', () => {
       expect(result.skipped_reason).toBeUndefined();
     });
 
+    // Batch test: 6 API calls × ~1s rate limit each = ~6s minimum, set 10s timeout
     it('handles batch processing with cost accumulation', async () => {
-      // Simulate processing multiple papers
       mockFetch([
         mockHaikuResponse(0.2), // Paper 1: irrelevant
         mockHaikuResponse(0.9), // Paper 2: relevant
@@ -616,6 +636,6 @@ describe('SummarizationClient', () => {
         results.reduce((sum, r) => sum + r.haiku_cost, 0) +
         results.reduce((sum, r) => sum + r.sonnet_cost, 0);
       expect(totalCost).toBeCloseTo(expectedCost, 8);
-    });
+    }, 10000);
   });
 });

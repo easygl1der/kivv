@@ -5,7 +5,7 @@
 // Tests rate limiting, XML parsing, error handling, and query building
 // =============================================================================
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ArxivClient, ArxivQueryBuilder, type ArxivPaper } from '../../shared/arxiv-client';
 
 // =============================================================================
@@ -409,14 +409,16 @@ describe('ArxivClient - Error Handling', () => {
     client = new ArxivClient();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('should return empty array on HTTP error', async () => {
-    global.fetch = vi.fn(() =>
-      Promise.resolve({
-        ok: false,
-        status: 500,
-        statusText: 'Internal Server Error',
-      } as Response)
-    );
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+    } as Response);
 
     const papers = await client.search({ query: 'cat:cs.AI' });
 
@@ -424,9 +426,7 @@ describe('ArxivClient - Error Handling', () => {
   });
 
   it('should return empty array on network error', async () => {
-    global.fetch = vi.fn(() =>
-      Promise.reject(new Error('Network error'))
-    );
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network error'));
 
     const papers = await client.search({ query: 'cat:cs.AI' });
 
@@ -434,12 +434,10 @@ describe('ArxivClient - Error Handling', () => {
   });
 
   it('should return empty array on invalid XML', async () => {
-    global.fetch = vi.fn(() =>
-      Promise.resolve({
-        ok: true,
-        text: () => Promise.resolve('not valid xml at all'),
-      } as Response)
-    );
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve('not valid xml at all'),
+    } as Response);
 
     const papers = await client.search({ query: 'cat:cs.AI' });
 

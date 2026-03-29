@@ -6,6 +6,23 @@
 // =============================================================================
 
 // =============================================================================
+// AI Provider Configuration
+// =============================================================================
+export type AIProvider = 'anthropic' | 'minimax';
+
+/** Current AI provider - set to 'minimax' to use MiniMax */
+export const AI_PROVIDER: AIProvider = 'minimax';
+
+// =============================================================================
+// MiniMax API Configuration
+// =============================================================================
+export const MINIMAX_API_BASE_URL = 'https://api.minimax.chat/v1';
+export const MINIMAX_MODEL = 'MiniMax-M2.5';  // MiniMax model for summarization
+export const MINIMAX_RATE_LIMIT_MS = 1000;
+export const MINIMAX_JITTER_MIN_MS = 100;
+export const MINIMAX_JITTER_MAX_MS = 300;
+
+// =============================================================================
 // arXiv API Configuration
 // =============================================================================
 
@@ -61,7 +78,7 @@ export const CLAUDE_SONNET_MODEL = 'claude-sonnet-4-20250514';
 // =============================================================================
 
 /** Maximum output tokens for Sonnet summaries (3 bullet points) */
-export const MAX_SUMMARY_OUTPUT_TOKENS = 120;
+export const MAX_SUMMARY_OUTPUT_TOKENS = 5000;
 
 /** Maximum output tokens for Haiku triage (just a number 0.0-1.0) */
 export const MAX_TRIAGE_OUTPUT_TOKENS = 10;

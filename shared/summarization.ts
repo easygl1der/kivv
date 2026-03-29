@@ -1,15 +1,22 @@
 // =============================================================================
 // kivv - Two-Stage AI Summarization Client
 // =============================================================================
-// Stage 1: Claude Haiku for relevance triage (0.0-1.0 score)
-// Stage 2: Claude Sonnet for detailed summaries (only if score >= threshold)
+// Supports both Anthropic Claude and MiniMax
+// Stage 1: Fast model for relevance triage (0.0-1.0 score)
+// Stage 2: Strong model for detailed summaries (only if score >= threshold)
 // Cost optimization: ~96% savings on irrelevant papers
-// Rate limiting: 5 req/s with jitter for Anthropic API
+// Rate limiting: Configurable per provider
 // Budget tracking: Circuit breaker at $1/day
 // =============================================================================
 
 import { hashContent } from './utils';
 import {
+  AI_PROVIDER,
+  MINIMAX_API_BASE_URL,
+  MINIMAX_MODEL,
+  MINIMAX_RATE_LIMIT_MS,
+  MINIMAX_JITTER_MIN_MS,
+  MINIMAX_JITTER_MAX_MS,
   CLAUDE_HAIKU_MODEL,
   CLAUDE_SONNET_MODEL,
   MAX_SUMMARY_OUTPUT_TOKENS,
@@ -32,13 +39,13 @@ import {
 export interface SummarizationResult {
   /** Generated summary (null if irrelevant/skipped/error) */
   summary: string | null;
-  /** Relevance score from Haiku triage (0.0-1.0) */
+  /** Relevance score from triage (0.0-1.0) */
   relevance_score: number;
   /** SHA-256 hash of title + abstract for deduplication */
   content_hash: string;
-  /** Cost of Haiku triage in USD */
+  /** Cost of triage in USD */
   haiku_cost: number;
-  /** Cost of Sonnet summary in USD */
+  /** Cost of summary in USD */
   sonnet_cost: number;
   /** Total cost (haiku + sonnet) in USD */
   total_cost: number;
@@ -64,45 +71,58 @@ interface AnthropicResponse {
   };
 }
 
+/**
+ * OpenAI/MiniMax compatible API response
+ */
+interface OpenAIResponse {
+  id: string;
+  model: string;
+  choices: Array<{
+    message: {
+      role: string;
+      content: string;
+    };
+    finish_reason: string;
+  }>;
+  usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+}
+
 // =============================================================================
 // Summarization Client
 // =============================================================================
 
 /**
- * Two-stage AI summarization client using Claude Haiku + Sonnet
+ * Two-stage AI summarization client supporting multiple providers
  *
- * Stage 1: Haiku triage for relevance scoring (~$0.00025/paper)
- * Stage 2: Sonnet summary for relevant papers (~$0.006/paper)
+ * Stage 1: Fast model for relevance triage (~$0.0001/paper)
+ * Stage 2: Strong model for detailed summaries (~$0.003/paper)
  *
  * Features:
- * - Rate limiting: 5 req/s with jitter
+ * - Multi-provider support: Anthropic Claude or MiniMax
+ * - Rate limiting with jitter
  * - Budget tracking: Circuit breaker at $1/day
  * - Content hashing: Detect duplicate papers
  * - Error handling: Graceful failures with retry
- *
- * @example
- * const client = new SummarizationClient(env.CLAUDE_API_KEY);
- * const result = await client.summarize(
- *   "Attention Is All You Need",
- *   "We propose a new architecture...",
- *   ["transformers", "machine learning"]
- * );
- * console.log(result.summary); // 3-sentence summary
- * console.log(result.relevance_score); // 0.95
- * console.log(result.total_cost); // 0.00625
  */
 export class SummarizationClient {
   private apiKey: string;
+  private provider: 'anthropic' | 'minimax';
   private lastRequestTime = 0;
   private totalCost = 0;
 
   /**
    * Create a new summarization client
    *
-   * @param apiKey - Anthropic API key (from env.CLAUDE_API_KEY)
+   * @param apiKey - API key (Anthropic or MiniMax)
+   * @param provider - AI provider ('anthropic' or 'minimax')
    */
-  constructor(apiKey: string) {
+  constructor(apiKey: string, provider: 'anthropic' | 'minimax' = 'minimax') {
     this.apiKey = apiKey;
+    this.provider = provider;
   }
 
   // ===========================================================================
@@ -110,18 +130,28 @@ export class SummarizationClient {
   // ===========================================================================
 
   /**
-   * Enforce rate limit: 5 req/s = 200ms between requests + jitter (50-100ms)
-   *
-   * This prevents hitting Anthropic's rate limit of 5 requests per second.
-   * We add random jitter to avoid synchronized request patterns.
+   * Enforce rate limit based on provider
    */
   private async enforceRateLimit(): Promise<void> {
     const now = Date.now();
     const timeSinceLastRequest = now - this.lastRequestTime;
-    const jitter =
-      Math.random() * (ANTHROPIC_JITTER_MAX_MS - ANTHROPIC_JITTER_MIN_MS) +
-      ANTHROPIC_JITTER_MIN_MS;
-    const requiredDelay = ANTHROPIC_RATE_LIMIT_MS + jitter;
+
+    let rateLimitMs: number;
+    let jitterMin: number;
+    let jitterMax: number;
+
+    if (this.provider === 'minimax') {
+      rateLimitMs = MINIMAX_RATE_LIMIT_MS;
+      jitterMin = MINIMAX_JITTER_MIN_MS;
+      jitterMax = MINIMAX_JITTER_MAX_MS;
+    } else {
+      rateLimitMs = ANTHROPIC_RATE_LIMIT_MS;
+      jitterMin = ANTHROPIC_JITTER_MIN_MS;
+      jitterMax = ANTHROPIC_JITTER_MAX_MS;
+    }
+
+    const jitter = Math.random() * (jitterMax - jitterMin) + jitterMin;
+    const requiredDelay = rateLimitMs + jitter;
 
     if (timeSinceLastRequest < requiredDelay) {
       const sleepMs = requiredDelay - timeSinceLastRequest;
@@ -132,21 +162,11 @@ export class SummarizationClient {
   }
 
   // ===========================================================================
-  // Stage 1: Haiku Triage
+  // Stage 1: Triage
   // ===========================================================================
 
   /**
-   * Stage 1: Use Claude Haiku to quickly assess paper relevance
-   *
-   * Prompt: Rate relevance of paper to user topics (0.0-1.0)
-   * Model: Claude 3.5 Haiku
-   * Cost: ~$0.00025 per paper
-   * Max tokens: 10 (just need the number)
-   *
-   * @param title - Paper title
-   * @param abstract - Paper abstract
-   * @param userTopics - User's research topics
-   * @returns Relevance score (0.0-1.0) and cost
+   * Stage 1: Use fast model to quickly assess paper relevance
    */
   private async triageRelevance(
     title: string,
@@ -157,24 +177,16 @@ export class SummarizationClient {
 
     const topicList = userTopics.join(', ');
 
-    // Security-focused prompt for offensive security researcher
-    const prompt = `You are evaluating research papers for an offensive security researcher and penetration tester.
+    const prompt = `You are evaluating research papers for relevance to the user's research interests.
 
 USER INTERESTS: ${topicList}
 
-SCORING CRITERIA (for offensive security relevance):
-- 0.9-1.0: Novel attack/exploit technique, directly weaponizable, reveals new vulnerability class
-- 0.7-0.9: Security-relevant technique, adversarial ML, practical offensive application
-- 0.5-0.7: Indirectly applicable (ML/AI techniques usable for security, defensive paper with offensive insights)
-- 0.3-0.5: Tangentially related (mentions security but not primary focus)
-- 0.0-0.3: Irrelevant to security research
-
-Consider:
-1. Can techniques be weaponized or applied to offensive security?
-2. Does it reveal new attack surfaces or vulnerability patterns?
-3. Are there evasion/obfuscation techniques to learn from?
-4. Could this improve red team operations or penetration testing?
-5. Does it advance adversarial ML, malware analysis, or exploit development?
+SCORING CRITERIA:
+- 0.9-1.0: Highly relevant, directly addresses user's interests
+- 0.7-0.9: Relevant, closely related to user's field
+- 0.5-0.7: Somewhat relevant, tangential connection
+- 0.3-0.5: Low relevance, indirect connection
+- 0.0-0.3: Not relevant, different field entirely
 
 Paper Title: ${title}
 
@@ -182,44 +194,37 @@ Abstract: ${abstract}
 
 Return ONLY a number between 0.0 and 1.0. No explanation.`;
 
-    const response = await this.callClaude(
-      CLAUDE_HAIKU_MODEL,
-      prompt,
-      MAX_TRIAGE_OUTPUT_TOKENS
-    );
+    if (this.provider === 'minimax') {
+      const response = await this.callMiniMax(MINIMAX_MODEL, prompt, MAX_TRIAGE_OUTPUT_TOKENS);
+      // M2.5 puts responses in reasoning_content, check both fields
+      const message = response.choices[0]?.message;
+      const scoreText = (message?.content?.trim() || message?.reasoning_content?.trim() || '0.5');
+      const score = parseFloat(scoreText);
 
-    // Parse score from response
-    const scoreText = response.content[0].text.trim();
-    const score = parseFloat(scoreText);
+      if (isNaN(score) || score < 0 || score > 1) {
+        return { score: 0.5, cost: this.calculateCost(response.usage, 'triage') };
+      }
 
-    if (isNaN(score) || score < 0 || score > 1) {
-      console.warn(
-        `Invalid relevance score: ${scoreText}, defaulting to 0.5`
-      );
-      return { score: 0.5, cost: this.calculateCost(response.usage, 'haiku') };
+      return { score, cost: this.calculateCost(response.usage, 'triage') };
+    } else {
+      const response = await this.callClaude(CLAUDE_HAIKU_MODEL, prompt, MAX_TRIAGE_OUTPUT_TOKENS);
+      const scoreText = response.content[0].text.trim();
+      const score = parseFloat(scoreText);
+
+      if (isNaN(score) || score < 0 || score > 1) {
+        return { score: 0.5, cost: this.calculateCost(response.usage, 'triage') };
+      }
+
+      return { score, cost: this.calculateCost(response.usage, 'triage') };
     }
-
-    return {
-      score,
-      cost: this.calculateCost(response.usage, 'haiku'),
-    };
   }
 
   // ===========================================================================
-  // Stage 2: Sonnet Summary
+  // Stage 2: Summary
   // ===========================================================================
 
   /**
-   * Stage 2: Use Claude Sonnet to generate detailed summary
-   *
-   * Prompt: Summarize paper in 3 sentences (problem, approach, results)
-   * Model: Claude 3.5 Sonnet
-   * Cost: ~$0.006 per paper
-   * Max tokens: 120
-   *
-   * @param title - Paper title
-   * @param abstract - Paper abstract
-   * @returns Summary (3 sentences) and cost
+   * Stage 2: Use strong model to generate detailed summary
    */
   private async generateSummary(
     title: string,
@@ -227,27 +232,42 @@ Return ONLY a number between 0.0 and 1.0. No explanation.`;
   ): Promise<{ summary: string; cost: number }> {
     await this.enforceRateLimit();
 
-    const prompt = `Summarize this research paper in exactly 3 sentences. Focus on:
+    const prompt = `Write a comprehensive summary of this research paper in English ONLY. Include:
 1. The problem being addressed
 2. The approach or method used
 3. The key results or findings
+4. Any notable innovations or contributions
+
+IMPORTANT:
+- Write the entire summary in English. Do NOT use any Chinese characters.
+- ONLY wrap TRUE mathematical expressions in $$...$$. Examples of TRUE math:
+  - Equations with operators: $$O(N^3)$$, $$\\nabla f(x)$$, $$\\frac{d}{dx}$$
+  - Greek letters in formulas: $$\\alpha$$, $$\\beta$$, $$\\lambda$$
+  - Matrix/vector notation: $$\\mathbf{W}$$, $$\\vec{x}$$
+  - Statistical symbols: $$p\\text{-value}$$, $$\\mathbb{E}[X]$$
+- DO NOT wrap these in $$:
+  - Acronyms like LLMs, RAG, RL, NLP, CNN, GPT, LLM, AI, ML
+  - Regular variable names like "function f" (just write "function f", not "$$f$$")
+  - Plain words like "matrix A" (just write "matrix A")
+- Write acronyms and abbreviations as plain text, NOT as math formulas
 
 Paper Title: ${title}
 
 Abstract: ${abstract}
 
-Provide ONLY the 3-sentence summary, nothing else.`;
+Provide a detailed summary in 2-4 paragraphs. Be informative and capture the essential contributions.`;
 
-    const response = await this.callClaude(
-      CLAUDE_SONNET_MODEL,
-      prompt,
-      MAX_SUMMARY_OUTPUT_TOKENS
-    );
-
-    return {
-      summary: response.content[0].text.trim(),
-      cost: this.calculateCost(response.usage, 'sonnet'),
-    };
+    if (this.provider === 'minimax') {
+      const response = await this.callMiniMax(MINIMAX_MODEL, prompt, MAX_SUMMARY_OUTPUT_TOKENS);
+      const message = response.choices[0]?.message;
+      // M2.5 puts responses in reasoning_content, check both fields
+      const summary = (message?.content?.trim() || message?.reasoning_content?.trim() || '');
+      return { summary, cost: this.calculateCost(response.usage, 'summary') };
+    } else {
+      const response = await this.callClaude(CLAUDE_SONNET_MODEL, prompt, MAX_SUMMARY_OUTPUT_TOKENS);
+      const summary = response.content[0].text.trim();
+      return { summary, cost: this.calculateCost(response.usage, 'summary') };
+    }
   }
 
   // ===========================================================================
@@ -256,20 +276,6 @@ Provide ONLY the 3-sentence summary, nothing else.`;
 
   /**
    * Execute two-stage summarization pipeline
-   *
-   * Flow:
-   * 1. Generate content hash (for deduplication)
-   * 2. Check budget ($1/day circuit breaker)
-   * 3. Stage 1: Haiku triage (~$0.00025)
-   * 4. If score < threshold: Skip Sonnet (save ~$0.006)
-   * 5. If score >= threshold: Stage 2 Sonnet summary (~$0.006)
-   *
-   * @param title - Paper title
-   * @param abstract - Paper abstract
-   * @param userTopics - User's research topics
-   * @param relevanceThreshold - Minimum score for Sonnet (default: 0.7)
-   * @param currentTotalCost - Running total cost from checkpoint (default: 0)
-   * @returns Summarization result with summary, score, costs
    */
   async summarize(
     title: string,
@@ -278,8 +284,6 @@ Provide ONLY the 3-sentence summary, nothing else.`;
     relevanceThreshold = DEFAULT_RELEVANCE_THRESHOLD,
     currentTotalCost = 0
   ): Promise<SummarizationResult> {
-    // Check budget circuit breaker against checkpoint total, not instance total
-    // This prevents bypass from creating new instances each automation run
     if (currentTotalCost >= DAILY_BUDGET_CAP_USD) {
       return {
         summary: null,
@@ -295,20 +299,12 @@ Provide ONLY the 3-sentence summary, nothing else.`;
     const content_hash = await hashContent(title + abstract);
 
     try {
-      // Stage 1: Haiku triage
-      const { score, cost: haikuCost } = await this.triageRelevance(
-        title,
-        abstract,
-        userTopics
-      );
-
+      // Stage 1: Triage
+      const { score, cost: haikuCost } = await this.triageRelevance(title, abstract, userTopics);
       this.totalCost += haikuCost;
 
       // Check relevance threshold
       if (score < relevanceThreshold) {
-        console.log(
-          `Paper irrelevant (score: ${score.toFixed(2)}), skipping Sonnet`
-        );
         return {
           summary: null,
           relevance_score: score,
@@ -320,17 +316,10 @@ Provide ONLY the 3-sentence summary, nothing else.`;
         };
       }
 
-      // Stage 2: Sonnet summary (only for relevant papers)
-      const { summary, cost: sonnetCost } = await this.generateSummary(
-        title,
-        abstract
-      );
-
+      // Stage 2: Summary (only for relevant papers)
+      const { summary, cost: sonnetCost } = await this.generateSummary(title, abstract);
       this.totalCost += sonnetCost;
 
-      console.log(
-        `Paper relevant (score: ${score.toFixed(2)}), generated summary`
-      );
       return {
         summary,
         relevance_score: score,
@@ -354,20 +343,45 @@ Provide ONLY the 3-sentence summary, nothing else.`;
   }
 
   // ===========================================================================
-  // Anthropic API Client
+  // API Clients
   // ===========================================================================
 
   /**
-   * Call Anthropic Messages API
-   *
-   * Endpoint: POST https://api.anthropic.com/v1/messages
-   * Headers: x-api-key, anthropic-version, content-type
-   * Body: model, max_tokens, messages[]
-   *
-   * @param model - Model ID (haiku or sonnet)
-   * @param prompt - User prompt
-   * @param maxTokens - Maximum output tokens
-   * @returns API response with content and usage
+   * Call MiniMax/OpenAI compatible API
+   */
+  private async callMiniMax(
+    model: string,
+    prompt: string,
+    maxTokens: number
+  ): Promise<OpenAIResponse> {
+    const response = await fetch(`${MINIMAX_API_BASE_URL}/text/chatcompletion_v2`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: maxTokens,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`MiniMax API error: ${response.status} - ${errorText}`);
+    }
+
+    return (await response.json()) as OpenAIResponse;
+  }
+
+  /**
+   * Call Anthropic Claude API
    */
   private async callClaude(
     model: string,
@@ -395,9 +409,7 @@ Provide ONLY the 3-sentence summary, nothing else.`;
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(
-        `Anthropic API error: ${response.status} ${response.statusText} - ${errorText}`
-      );
+      throw new Error(`Anthropic API error: ${response.status} - ${errorText}`);
     }
 
     return (await response.json()) as AnthropicResponse;
@@ -410,65 +422,54 @@ Provide ONLY the 3-sentence summary, nothing else.`;
   /**
    * Calculate cost based on token usage and model pricing
    *
-   * Haiku pricing:
-   * - Input: $0.25 per 1M tokens
-   * - Output: $1.25 per 1M tokens
+   * MiniMax M2.2 pricing (approximate):
+   * - Input: $0.10 per 1M tokens
+   * - Output: $0.10 per 1M tokens
    *
-   * Sonnet pricing:
-   * - Input: $3.00 per 1M tokens
-   * - Output: $15.00 per 1M tokens
-   *
-   * @param usage - Token usage from API response
-   * @param model - Model type (haiku or sonnet)
-   * @returns Total cost in USD
+   * Claude pricing:
+   * - Haiku: $0.25/$1.25 per 1M tokens
+   * - Sonnet: $3.00/$15.00 per 1M tokens
    */
   private calculateCost(
-    usage: { input_tokens: number; output_tokens: number },
-    model: 'haiku' | 'sonnet'
+    usage: { input_tokens?: number; output_tokens?: number; prompt_tokens?: number; completion_tokens?: number },
+    type: 'triage' | 'summary'
   ): number {
-    const inputCost =
-      usage.input_tokens *
-      (model === 'haiku' ? 0.25 / 1_000_000 : 3.0 / 1_000_000);
-    const outputCost =
-      usage.output_tokens *
-      (model === 'haiku' ? 1.25 / 1_000_000 : 15.0 / 1_000_000);
-    return inputCost + outputCost;
+    // Handle both Anthropic and OpenAI format
+    const inputTokens = usage.input_tokens || usage.prompt_tokens || 0;
+    const outputTokens = usage.output_tokens || usage.completion_tokens || 0;
+
+    if (this.provider === 'minimax') {
+      // MiniMax pricing: ~$0.10/1M input and output
+      const rate = type === 'triage' ? 0.10 : 0.10;
+      return (inputTokens + outputTokens) * rate / 1_000_000;
+    } else {
+      // Claude pricing
+      if (type === 'triage') {
+        // Haiku
+        return inputTokens * 0.25 / 1_000_000 + outputTokens * 1.25 / 1_000_000;
+      } else {
+        // Sonnet
+        return inputTokens * 3.0 / 1_000_000 + outputTokens * 15.0 / 1_000_000;
+      }
+    }
   }
 
   // ===========================================================================
   // Budget Tracking
   // ===========================================================================
 
-  /**
-   * Get total cost for this session
-   *
-   * @returns Total cost in USD
-   */
   getTotalCost(): number {
     return this.totalCost;
   }
 
-  /**
-   * Reset cost tracking (call at start of new day)
-   */
   resetCost(): void {
     this.totalCost = 0;
   }
 
-  /**
-   * Check if budget is exceeded
-   *
-   * @returns True if total cost >= daily cap
-   */
   isBudgetExceeded(): boolean {
     return this.totalCost >= DAILY_BUDGET_CAP_USD;
   }
 
-  /**
-   * Get remaining budget
-   *
-   * @returns Remaining budget in USD
-   */
   getRemainingBudget(): number {
     return Math.max(0, DAILY_BUDGET_CAP_USD - this.totalCost);
   }
